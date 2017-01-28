@@ -1,0 +1,20 @@
+version: 1
+creator: callgrind-3.8.1
+pid: 7571
+cmd:  python /afs/cern.ch/lhcb/software/releases/GAUDI/GAUDI_v27r1/InstallArea/x86_64-slc6-gcc49-opt/scripts/gaudirun.py Moore_RateTest_options3.py
+part: 2
+
+
+desc: I1 cache: 
+desc: D1 cache: 
+desc: LL cache: 
+
+desc: Timerange: Basic block 1474329301160 - 1474329301161
+desc: Trigger: Program termination
+
+positions: instr line
+events: Ir
+summary: 0
+
+
+totals: 0
