@@ -28,12 +28,16 @@ short: LikelihoodTool
 ### Rate report
 
 processed: 30000 events
+
 rates assume 1000000.0 Hz from level-0
-|---|`Hlt1Global`                                    |142.93+-2.02   |--             |
-|---|`Hlt2Global`                                    |12.60+-0.64    |--             |
-|---|`Hlt2.*Turbo`                                   |4.87+-0.40     |--             |
-|---|`Hlt2.*Full`                                    |8.93+-0.54     |--             |
-|---|`Hlt2.*Turcal`                                  |0.37+-0.11     |--             |
+
+|id | name/regexp                                    |  unlabelled   |  unlabelled   |
+| - | ---------------------------------------------- | -------------:|:-------------:|
+|   |`Hlt1Global`                                    |142.93+-2.02   |--             |
+|   |`Hlt2Global`                                    |12.60+-0.64    |--             |
+|   |`Hlt2.*Turbo`                                   |4.87+-0.40     |--             |
+|   |`Hlt2.*Full`                                    |8.93+-0.54     |--             |
+|   |`Hlt2.*Turcal`                                  |0.37+-0.11     |--             |
 
 
 ### Running
@@ -80,12 +84,16 @@ in 2139/3896
 ### Rate report
 
 processed: 30000 events
+
 rates assume 1000000.0 Hz from level-0
-|---|`Hlt1Global`                                    |148.33+-2.05   |--             |
-|---|`Hlt2Global`                                    |17.17+-0.75    |--             |
-|---|`Hlt2.*Turbo`                                   |7.77+-0.51     |--             |
-|---|`Hlt2.*Full`                                    |11.30+-0.61    |--             |
-|---|`Hlt2.*Turcal`                                  |0.33+-0.11     |--             |
+
+|id | name/regexp                                    |  unlabelled   |  unlabelled   |
+| - | ---------------------------------------------- | -------------:|:-------------:|
+|   |`Hlt1Global`                                    |148.33+-2.05   |--             |
+|   |`Hlt2Global`                                    |17.17+-0.75    |--             |
+|   |`Hlt2.*Turbo`                                   |7.77+-0.51     |--             |
+|   |`Hlt2.*Full`                                    |11.30+-0.61    |--             |
+|   |`Hlt2.*Turcal`                                  |0.33+-0.11     |--             |
 
 ### Running
 
