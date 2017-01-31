@@ -30,7 +30,7 @@ processed: 30000 events
 rates assume 1000000.0 Hz from level-0
 
 | id | name/regexp                                    |  unlabelled   |  unlabelled   |
-|  - | ---------------------------------------------- | -------------:|:-------------:|
+| j- | ---------------------------------------------- | -------------:|:-------------:|
 |    | `Hlt1Global`                                   | 142.93+-2.02  |  --           |
 |    | `Hlt2Global`                                   | 12.60+-0.64   |  --           |
 |    | `Hlt2.*Turbo`                                  | 4.87+-0.40    |  --           |
@@ -108,3 +108,20 @@ rates assume 1000000.0 Hz from level-0
 
 
 ### Δ
+
+| function                                       |  GP free       | function                                       | with GP        |    reduction       |
+| ---------------------------------------------- | --------------:| ---------------------------------------------- | --------------:| ------------------:|
+| `main`                                         | 9008328919384  | `main`                                         | 7723736757226  |       n/a          |
+|   - excl. GP                                   |                |                                                |                |                    |
+| `executeRun(int)`                              | 7186530848757  | `virtual ApplicationMgr::executeRun(int)`      | 6034605155174  |                    |
+|   (seen from main)                             |                |   (seen from main)                             |                |                    |
+|   - excl. GP                                   | 7176631143805  |                                                |                |    - 15.913 %      |
+| `Rich::Rec::initialise::execute()` ????        |  744462669589  | `Rich::Rec::initialise::execute()` ????        |  569902547685  |    - 23.448 %      |
+| `Rich::Rec::GlobalPID::Likelihood::execute()`  |                | `Rich::Rec::GlobalPID::Likelihood::execute()`  |                |                    |
+| LikelihoodTool                                 |  306177678511  | LikelihoodTool                                 |  131526970650  |    - 57.042 %      |
+| PhotonRecoUsingQuarticSoln                     |  256604311245  | PhotonRecoUsingQuarticSoln                     |  191245047125  |    - 25.471 %      |
+| `MuonIDAlgLite::execute`                       |    7590668704  | `MuonIDAlgLite::execute`                       |    5005206732  |    - 34.061 %      |
+| `CombineParticles::execute()`                  |  187645739148  | `CombineParticles::execute()`                  |   78177166723  |    - 58.338 %      |
+| `virtual Run2GhostId::execute(LHCb::Track&)`   |    9899704952  | `virtual Run2GhostId::execute(LHCb::Track&)`   |   10048600073  |                    |
+|   - from `TrackBestTrackCreator::fit(Track&)`  |    5372318714  |   - from `TrackBestTrackCreator::fit(Track&)`  |    5473765064  |                    |
+|   - from `HltTrackFilterGhostProb::tracks…`    |    4527386238  |   - from `HltTrackFilterGhostProb::tracks…`    |    4574835009  |                    |
