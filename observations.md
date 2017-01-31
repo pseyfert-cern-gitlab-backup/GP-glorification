@@ -23,21 +23,19 @@ short: LikelihoodTool
 |   - from `TrackBestTrackCreator::fit(Track&)`  |    5473765064  |        0.091 %     |
 |   - from `HltTrackFilterGhostProb::tracks…`    |    4574835009  |        0.076 %     |
 
-| tanh from ANNPID                               |    3394072907
-
 ### Rate report
 
 processed: 30000 events
 
 rates assume 1000000.0 Hz from level-0
 
-|id | name/regexp                                    |  unlabelled   |  unlabelled   |
-| - | ---------------------------------------------- | -------------:|:-------------:|
-|   |`Hlt1Global`                                    |142.93+-2.02   |--             |
-|   |`Hlt2Global`                                    |12.60+-0.64    |--             |
-|   |`Hlt2.*Turbo`                                   |4.87+-0.40     |--             |
-|   |`Hlt2.*Full`                                    |8.93+-0.54     |--             |
-|   |`Hlt2.*Turcal`                                  |0.37+-0.11     |--             |
+| id | name/regexp                                    |  unlabelled   |  unlabelled   |
+|  - | ---------------------------------------------- | -------------:|:-------------:|
+|    | `Hlt1Global`                                   | 142.93+-2.02  |  --           |
+|    | `Hlt2Global`                                   | 12.60+-0.64   |  --           |
+|    | `Hlt2.*Turbo`                                  | 4.87+-0.40    |  --           |
+|    | `Hlt2.*Full`                                   | 8.93+-0.54    |  --           |
+|    | `Hlt2.*Turcal`                                 | 0.37+-0.11    |  --           |
 
 
 ### Running
@@ -87,13 +85,13 @@ processed: 30000 events
 
 rates assume 1000000.0 Hz from level-0
 
-|id | name/regexp                                    |  unlabelled   |  unlabelled   |
-| - | ---------------------------------------------- | -------------:|:-------------:|
-|   |`Hlt1Global`                                    |148.33+-2.05   |--             |
-|   |`Hlt2Global`                                    |17.17+-0.75    |--             |
-|   |`Hlt2.*Turbo`                                   |7.77+-0.51     |--             |
-|   |`Hlt2.*Full`                                    |11.30+-0.61    |--             |
-|   |`Hlt2.*Turcal`                                  |0.33+-0.11     |--             |
+| id | name/regexp                                    |  unlabelled   |  unlabelled   |
+|  - | ---------------------------------------------- | -------------:|:-------------:|
+|    | `Hlt1Global`                                   | 148.33+-2.05  |  --           |
+|    | `Hlt2Global`                                   | 17.17+-0.75   |  --           |
+|    | `Hlt2.*Turbo`                                  | 7.77+-0.51    |  --           |
+|    | `Hlt2.*Full`                                   | 11.30+-0.61   |  --           |
+|    | `Hlt2.*Turcal`                                 | 0.33+-0.11    |  --           |
 
 ### Running
 
