@@ -1,0 +1,1187 @@
+Index: MooreTests/Moore_RateTest.py
+===================================================================
+--- MooreTests/Moore_RateTest.py	(revision 209302)
++++ MooreTests/Moore_RateTest.py	(working copy)
+@@ -132,13 +132,15 @@
+     # general test options
+ 
+     parser.add_option( "-n", "--evtmax", type="int", action = "store", dest = "EvtMax",
+-                       default = 30000, help = "Number of events to run over" )
++                       #default = 30000, help = "Number of events to run over" )
++                       default  = 1000, help = "Number of events to run over" )
+ 
+     parser.add_option( "--mode", action="store", dest="mode",
+                        default='rate', help="Report rates or efficiencies?")
+ 
+     parser.add_option( "--settings", action = "store", dest="ThresholdSettings",
+-                       default = 'Physics_pp_2017',
++                       #default = 'Physics_pp_2017',
++                       default = 'Physics_pp_June2016',
+                        help = "ThresholdSettings used by Moore")
+ 
+     parser.add_option( "--TCK", action = "store", dest="TCK",
+@@ -647,7 +649,7 @@
+     print '-'*84
+     print 'processed: %s events' %processed
+     print 'rates assume %s Hz from level-0' %input_rate if options.mode == "rate" else "Efficiencies in percent..."
+-    table_row("***","","*Rate [kHz]*","")
++    table_row("***","","Rate [kHz]","")
+     for level in ['Hlt1','Hlt2']:
+         ratescale = 1.e-3*input_rate
+         if options.mode == "efficiency":
+Index: MooreTests/Moore_RateTest_options.py
+===================================================================
+--- MooreTests/Moore_RateTest_options.py	(revision 0)
++++ MooreTests/Moore_RateTest_options.py	(revision 0)
+@@ -0,0 +1,742 @@
++#!/usr/bin/env python
++# Script to test the rates of a HLT configuration
++# Mika Vesterinen
++
++import os, sys, subprocess, re, optparse, math
++
++# Configuration
++import Gaudi.Configuration
++from Gaudi.Configuration import *
++from Configurables import GaudiSequencer as Sequence
++from Configurables import EventSelector, HltConf
++from Moore.Configuration import Moore
++from Gaudi.Configuration import appendPostConfigAction
++from multiprocessing import Process, Queue
++
++# GaudiPython
++import GaudiPython
++from GaudiPython import AppMgr
++LHCb = GaudiPython.gbl.LHCb
++
++HLT1RegexList = ["Hlt1LowMult.*",
++                 "Hlt1(Di|Multi)Muon.*",
++                 "Hlt1SingleMuon.*",
++                 "Hlt1.*Electron.*",
++                 "Hlt1B2.*",
++                 "Hlt1IncPhi.*",
++                 "Hlt1TrackMuon.*",
++                 "Hlt1.*TrackMVA.*",
++                 "Hlt1CalibTracking.*",
++                 "Hlt1DiProton.*"]
++
++HLT2RegexList = ["Hlt2CharmHad.*",
++                 "Hlt2CharmHad.*Turbo.*",
++                 "Hlt2CharmHad(?!.*?Turbo).*",
++                 "Hlt2DiMuon.*"]
++
++
++def linesFromTCK(q,TCK,TCKData):
++
++    _TCK = int(TCK,16)
++    print _TCK
++    type(_TCK)
++    tckbits = (_TCK & (3 << 28)) >> 28
++    if tckbits == 1:
++        from TCKUtils.utils import getHlt1Lines
++        if TCKData != "":
++            from Configurables import ConfigCDBAccessSvc
++            cas=ConfigCDBAccessSvc(File=TCKData+"/config.cdb")
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt1Lines(_TCK,cas=cas)])
++        else:
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt1Lines(_TCK)])
++    elif tckbits == 2:
++        from TCKUtils.utils import getHlt2Lines
++        if TCKData != "":
++            from Configurables import ConfigCDBAccessSvc
++            cas=ConfigCDBAccessSvc(File=TCKData+"/config.cdb")
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt2Lines(_TCK,cas=cas)])
++        else:
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt2Lines(_TCK)])
++
++    q.put(lines)
++
++def getrate(scale,numer,denom):
++    eff = float(numer)/float(denom)
++    err = math.sqrt((eff-eff**2)/denom)
++    return [scale*eff,scale*err]
++
++def table_row(iLine,name,incl,excl):
++    if type(iLine) == type(""):
++        print ('|%s|%s\t' %(iLine,name[:40] + (name[40:] and '...'))).expandtabs(50),
++    else:
++        print ('|%03d|%s\t' %(int(iLine),name[:40] + (name[40:] and '...'))).expandtabs(50),
++    print ('|%s\t|%s\t|' %(incl,excl)).expandtabs(16)
++
++def rawevent_size(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [b for b in xrange(LHCb.RawBank.LastType)]
++    ibanks.remove(LHCb.RawBank.DstData)
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def rawevent_size_turbo(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [LHCb.RawBank.ODIN,
++              LHCb.RawBank.L0DU,
++              LHCb.RawBank.HltSelReports,
++              LHCb.RawBank.HltDecReports,
++              LHCb.RawBank.HltRoutingBits,
++              LHCb.RawBank.HltVertexReports,
++              LHCb.RawBank.DAQ,
++              LHCb.RawBank.TestDet,
++              LHCb.RawBank.TAEHeader,
++              LHCb.RawBank.HltLumiSummary,
++              LHCb.RawBank.DstBank,
++              #LHCb.RawBank.DstData, ## account for this separately
++              LHCb.RawBank.DstAddress,
++              LHCb.RawBank.FileID,
++              LHCb.RawBank.GaudiSerialize,
++              LHCb.RawBank.GaudiHeader,
++              LHCb.RawBank.L0Calo,
++              LHCb.RawBank.L0CaloFull,
++              LHCb.RawBank.L0Muon,
++              LHCb.RawBank.L0MuonProcCand,
++              LHCb.RawBank.L0PU,
++              LHCb.RawBank.L0CaloError,
++              LHCb.RawBank.L0MuonCtrlAll,
++              LHCb.RawBank.L0MuonError,
++              LHCb.RawBank.L0MuonProcData,
++              LHCb.RawBank.L0MuonRaw,
++              LHCb.RawBank.L0DUError,
++              LHCb.RawBank.L0PUFull,
++              LHCb.RawBank.L0PUError]
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def rawevent_size_persistReco(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [LHCb.RawBank.DstData]
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def routing_bits(rawevent):
++    """Return a list with the 96 routing bit values."""
++    rbbanks = rawevent.banks(LHCb.RawBank.HltRoutingBits)
++    if rbbanks.size() < 1: return [0]*96  # some events don't have rb bank
++    assert rbbanks.size() == 1  # stop if we have multiple rb banks
++    d = rbbanks[rbbanks.size() - 1].data()  # get last bank
++    bits = "{:032b}{:032b}{:032b}".format(d[2], d[1], d[0])
++    return map(int, reversed(bits))
++
++def main():
++
++    parser = optparse.OptionParser( usage = "usage: %prog [options]" )
++
++    # general test options
++
++    parser.add_option( "-n", "--evtmax", type="int", action = "store", dest = "EvtMax",
++                       #default = 30000, help = "Number of events to run over" )
++                       default  = 30000, help = "Number of events to run over" )
++
++    parser.add_option( "--mode", action="store", dest="mode",
++                       default='rate', help="Report rates or efficiencies?")
++
++    parser.add_option( "--settings", action = "store", dest="ThresholdSettings",
++                       #default = 'Physics_pp_2017',
++                       default = 'Physics_pp_June2016',
++                       help = "ThresholdSettings used by Moore")
++
++    parser.add_option( "--TCK", action = "store", dest="TCK",
++                       default = '',
++                       help = "HLT TCK. If unspecified, then run from ThresholdSettings.")
++
++    parser.add_option( "--split",action="store",dest="split",
++                       default="",help="Split mode for Moore ('' or 'Hlt1' or 'Hlt2')")
++
++    # options related to the input data
++
++    parser.add_option( "--inputdata",action="store",dest="inputdata",
++                       default="2016NB_25ns_L0Filt0x1609",help="TestFileDB label, or path to raw file.")
++
++    parser.add_option( "-d", "--datatype", action="store", dest="DataType",
++                       default="2016", help="DataType of inputdata")
++
++    parser.add_option( "--TFDBForTags",action="store",dest="TFDBForTags",
++                       default="",help="Original test file db path, to pick up tags")
++
++    parser.add_option( "--dddbtag", action="store", dest="DDDBtag",
++                       default='', help="DDDBTag to use. Rely on TestFileDB if unspecified." )
++
++    parser.add_option( "--conddbtag", action = "store", dest = "CondDBtag",
++                       default = '', help = "CondDBTag to use. Rely on TestFileDB if unspecified." )
++
++    parser.add_option( "--Simulation", action = "store_true",
++                       default = False, help = "Is this simulated data?")
++
++    parser.add_option( "--Online", action = "store_true",
++                       default = False, help = "Are you running on plus on data from the farm?")
++
++    parser.add_option( "--L0TCK", action = "store", dest="L0TCK",
++                       default = '',
++                       help = "L0 TCK. Should specificy if the input data was filtered with something different to what is in the ThresholdSettings.")
++
++    # other options
++
++    parser.add_option( "--TCKData", action = "store", dest = "TCKData",
++                       default = "", help = "TCKData")
++
++    parser.add_option( "--DisableRunStampCheck", action = "store_true",
++                       default = False, help = "DisableRunStampCheck")
++
++    parser.add_option( "--EnableOutputStreaming", action = "store_true",
++                       default = False, help = "EnableOutputStreaming")
++
++    parser.add_option( "--input_rate",type="float",action="store",dest="input_rate",
++                       default=1.e6,help="Input rate from L0 in Hz")
++
++    parser.add_option( "--tuplefile",action="store",dest="tuplefile",
++                       default="tuples.root",help="Output root file")
++
++    parser.add_option( "--outputFile",action="store",dest="outputFile",
++                       default="",help="OutputFile")
++
++    parser.add_option( "--OutputLevel",type="int",action="store",dest="OutputLevel",
++                       default=3,help="OutputLevel")
++
++    parser.add_option( "--hlt1changes",action="store",dest="hlt1changes",
++                       default="DefHlt1",help="Changes to Hlt1 thresholds")
++
++    parser.add_option( "--AdditionalHlt2Lines",action="store",dest="AdditionalHlt2Lines",
++                       default="",help="Semicolon separated list of lines")
++
++    parser.add_option( "--debug", action="store_true", dest="debug",
++                       default=False, help="Debug?")
++
++    # Parse the arguments
++    (options, args) = parser.parse_args()
++
++    # write some information about the test (needed for the handler that makes the web page)
++    f = open("JobSettings.txt",'w')
++    f.write("%s_%s_%s" %(options.inputdata,options.ThresholdSettings,options.hlt1changes))
++
++    Lines = {}
++    Lines["Hlt1"] = set()
++    Lines["Hlt2"] = set()
++
++    ######### RUNNING FROM TCK ##############
++    if options.TCK != "":
++        queue = Queue()
++        p = Process(target=linesFromTCK, args=(queue, options.TCK,options.TCKData))
++        p.start()
++        p.join() # this blocks until the process terminates
++        Lines[options.split] = queue.get()
++        print Lines
++        tckbits = (int(options.TCK,16) & (3 << 28)) >> 28
++        mapping = {1:"Hlt1",2:"Hlt2"}
++        options.split = mapping[tckbits]
++        if options.TCKData != "":
++            Moore().TCKData = options.TCKData
++        Moore().Split = options.split
++        Moore().UseTCK = True
++        Moore().InitialTCK = options.TCK
++        if options.split == "Hlt1":
++            Moore().RemoveInputHltRawBanks = True
++        elif options.split == "Hlt2":
++            Moore().RemoveInputHltRawBanks = False
++        if options.split == "Hlt1":
++            from Configurables import HltConfigSvc
++            trans = { 'DeterministicPrescaler/Hlt1MBNoBiasPreScaler' :  { 'AcceptFraction' : {'.*' : '0'}} }
++            prop="ApplyTransformation"
++            svc=HltConfigSvc()
++            svc.setProp(prop,trans)
++
++    ######### RUNNING FROM SETTINGS ##############
++    else:
++        from Configurables import HltConf
++        Moore().ThresholdSettings = options.ThresholdSettings
++        Moore().UseTCK = False
++        Moore().Split=options.split
++
++        # if specified, we can overide the L0TCK in the ThresholdSettings
++        # to use the one which which the input data set was filtered
++
++        if options.L0TCK != "":
++            HltConf().setProp("L0TCK",options.L0TCK)
++
++        # by default, the output streaming is disabled in HltConf
++        Moore().EnableOutputStreaming = options.EnableOutputStreaming
++
++        # Hlt raw banks should be removed when running in unsplit or Hlt1 mode
++        # They should not be removed when running in Hlt2 mode
++        if options.split in ["","Hlt1"]:
++            Moore().RemoveInputHltRawBanks = True
++        elif options.split == "Hlt2":
++            Moore().RemoveInputHltRawBanks = False
++
++        # By default, we remove the following lines
++        # - In the typical input dataset, we won't get the correct rate of lumi events
++        # - In the NB datasets, Hlt1MBNoBias will always fire (with its 10% prescale)
++        # - Also avoid the rate limited lines
++        HltConf().RemoveHlt1Lines = ["Hlt1MBNoBias",
++                                     "Hlt1MBNoBiasRateLimited",
++                                     "Hlt1Lumi",
++                                     "Hlt2Lumi"]
++
++        # option to add Hlt2 lines that aren't in the settings
++        # e.g. if you are developing a new line
++        if options.AdditionalHlt2Lines != "":
++            HltConf().AdditionalHlt2Lines = options.AdditionalHlt2Lines.split(";")
++
++        # the following is an example of how to overwrite some HltSettings
++        # this would be with
++        # > python Moore_RateTest.py --hlt1changes=EXAMPLE etc..
++        if options.hlt1changes != "":
++            from Hlt1Lines.Hlt1TrackLines            import Hlt1TrackLinesConf
++            from Hlt1Lines.Hlt1MVALines            import Hlt1MVALinesConf
++            OPTIONS = {"EXAMPLE":{Hlt1TrackLinesConf : {  'Muon_PT'           : 1100.
++                                                          , 'Muon_IPChi2'       : 35.}
++                                  },
++                       "TightHLT1":{Hlt1MVALinesConf : {  'TrackMVA':{'Param3':1.1},
++                                                          'TwoTrackMVA':{'Threshold':0.95},
++                                                          }
++                                    }
++                       }
++            if options.hlt1changes in OPTIONS.keys():
++                HltConf().OverwriteSettings = OPTIONS[options.hlt1changes]
++
++
++    # Settings that are common to "TCK" and "ThresholdSettings" modes
++    Moore().CheckOdin = False
++    Moore().ForceSingleL0Configuration = False
++    Moore().EnableTimer = 'Moore_RateTest.csv'
++    Moore().EvtMax = options.EvtMax
++    Moore().OutputLevel = options.OutputLevel
++    Moore().outputFile = options.outputFile
++    input_rate = options.input_rate
++
++
++
++    # Needed when running over real data
++    if not options.Simulation:
++        from Configurables import CondDB
++        CondDB().IgnoreHeartBeat = True
++        CondDB().EnableRunChangeHandler = True
++        CondDB().EnableRunStampCheck= not options.DisableRunStampCheck
++        if options.Online:
++            CondDB().UseDBSnapshot = True
++            CondDB().DBSnapshotDirectory = "/group/online/hlt/conditions"
++            CondDB().Tags["ONLINE"] = 'fake'
++            CondDB().Online = True
++            CondDB().EnableRunChangeHandler = True
++            CondDB().EnableRunStampCheck= False
++            if options.split=="Hlt2":
++                import sys
++                try:
++                    import All
++                except ImportError:
++                    rd = '/group/online/hlt/conditions/RunChangeHandler'
++                    sys.path.append(rd)
++                    import All
++                CondDB().RunChangeHandlerConditions = All.ConditionMap
++
++            if options.split=="Hlt1":
++                import sys
++                try:
++                    import AllHlt1
++                except ImportError:
++                    rd = '/group/online/hlt/conditions/RunChangeHandler'
++                    sys.path.append(rd)
++                    import AllHlt1
++                CondDB().RunChangeHandlerConditions = AllHlt1.ConditionMap
++
++    # inputdata
++    if ".mdf" in options.inputdata:
++        from GaudiConf import IOHelper
++        IOHelper("MDF").inputFiles([options.inputdata])
++        Moore().Simulation = options.Simulation
++    elif ".dst" in options.inputdata:
++        from GaudiConf import IOHelper
++        IOHelper().inputFiles(["PFN:"+options.inputdata])
++        Moore().Simulation = options.Simulation
++    else:
++        from PRConfig import TestFileDB
++        TestFileDB.test_file_db[options.inputdata].run(configurable=Moore())
++
++    # tags
++    # Only set the tags if specified
++    # This should be done if you neither provide TestFileDB label via --inputdata, nor provide it via --TFDBForTags
++    if options.CondDBtag != '':
++        Moore().CondDBtag = options.CondDBtag
++    if options.DDDBtag != '':
++        Moore().DDDBtag = options.DDDBtag
++    if options.TFDBForTags != '':
++        from PRConfig import TestFileDB
++        Moore().DDDBtag = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['DDDB']
++        Moore().CondDBtag = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['CondDB']
++        Moore().Simulation = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['Simulation']
++        Moore().DataType = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['DataType']
++
++    # deal with the Herschel decoding issue on MC (only when running from settings)
++    if Moore().getProp('Simulation') and options.ThresholdSettings != "":
++        from Configurables import HltConf
++        remove = ["Hlt1LowMultMaxVeloAndHerschel", "Hlt1LowMultVeloAndHerschel_Leptons", "Hlt1LowMultVeloAndHerschel_Hadrons","Hlt1LowMultMaxVeloAndHerschel","Hlt1LowMultVeloAndHerschel_Hadrons", "Hlt1LowMultVeloAndHerschel_Leptons"]
++        print '#'*100
++        print 'WARNING: SINCE YOU RUN ON A MC SAMPLE, WE ASSUME THAT WE NEED TO DISABLE ALL HLT1 LINES THAT REQUIRE DECODING OF HERSCHEL BANKS'
++        print 'DISABLING:', remove
++        print '#'*100
++        HltConf().RemoveHlt1Lines += remove
++
++    # print the Moore configurations
++    print options
++    print Moore()
++
++    # apply all ConfigurableUser instances
++    from GaudiKernel.Configurable import applyConfigurableUsers
++    applyConfigurableUsers()
++
++    ### getting ready for the event loop
++    gaudi = AppMgr()
++    gaudi.ExtSvc += ['ToolSvc']
++    gaudi.ExtSvc.append( 'DataOnDemandSvc' )
++    gaudi.initialize()
++
++    ### different way of getting the list of lines if running from threshold settings
++    persistRecoLines = []
++    if options.TCK == "":
++        for level in ["Hlt1","Hlt2"]:
++            for m in Sequence(level).Members:
++                Lines[level].add(m.name())
++        from HltLine.HltLine import hlt2Lines
++        persistRecoLines = [line.name() for line in hlt2Lines() if line.persistReco()]
++
++    ### remove certain lines from the accounting
++    remove = set()
++
++    rb_stats = [0]*96
++    for i in xrange(96):
++        rb_stats[i] = {"passed":0, "size":0.}
++
++    ### option to create a tuple with all of the decisions
++    if options.tuplefile != "":
++        from ROOT import (TTree, TFile,TNamed)
++        from array import array
++        TF = TFile(options.tuplefile,"RECREATE")
++        DecMaps = {} ## dicto of branches for the TTrees
++        DecTrees = {} ## dicto of TTrees
++        DecMaps["RB"] = {}
++
++
++        for format in ["Full","Turbo","persistReco"]:
++            brname = format+'EventSize'
++            DecMaps["RB"][brname] = array( 'f', [ 0 ] )
++            for i in xrange(96):
++                brname = format+"RB%s"%i
++                DecMaps["RB"][brname] = array( 'f', [ 0 ] )
++
++        DecMaps["persistRecoLines"] = {}
++        DecTrees["persistRecoLines"] = TTree('TuplePR','TuplePR')
++        for l in persistRecoLines:
++            DecMaps["persistRecoLines"][l] = array( 'i', [ 0 ] )
++            DecTrees["persistRecoLines"].Branch(l,DecMaps["persistRecoLines"][l], '%s/I'%l)
++        DecTrees["persistRecoLines"].Fill()
++        for level in ["Hlt1","Hlt2"]:
++            DecTrees[level] = TTree('Tuple%s'%level,'Tuple%s'%level)
++            DecMaps[level] = {}
++            for l in Lines[level]:
++                DecMaps[level][l] = array( 'i', [ 0 ] )
++                DecTrees[level].Branch(l,DecMaps[level][l], '%sDecision/I'%l)
++            for format in ["Full","Turbo",'persistReco']:
++                brname = format+'EventSize'
++                DecTrees[level].Branch(brname,DecMaps["RB"][brname],brname+'/F')
++                for i in [46,87,88,90]:
++                    brname = format+"RB%s"%i
++                    DecTrees[level].Branch(brname,DecMaps["RB"][brname],brname+'/F')
++
++
++    ### this will be dictionary of lines and their counters for the rates
++    line_stats = {}
++    for line in Lines["Hlt1"].union(Lines["Hlt2"]).union(set(["Hlt1Global","Hlt2Global"])):
++        line_stats[line] = {"passed_incl":0,
++                            "passed_excl":0}
++
++    ### counters for various regex
++    Hlt1ByRegex = {}
++    nPassedByRegex = 0
++    for r in HLT1RegexList:
++        Hlt1ByRegex[r] = {"passed_incl":0,
++                          "processed":0,
++                          "passed_this_event":0,
++                          "passed_excl":0}
++    Hlt1ByRegex["Other"] = {"passed_incl":0,
++                            "processed":0,
++                            "passed_this_event":0,
++                            "passed_excl":0}
++    Hlt2ByRegex = {}
++    nPassedhlt2ByRegex = 0
++    for s in HLT2RegexList:
++        Hlt2ByRegex[s] = {"passed_incl":0,
++                          "processed":0,
++                          "passed_this_event":0,
++                          "passed_excl":0}
++    Hlt2ByRegex["Other"] = {"passed_incl":0,
++                            "processed":0,
++                            "passed_this_event":0,
++                            "passed_excl":0}
++
++    stream_stats = {"Turbo":{"filter":"Hlt2.(?!.*?TurboCalib).*Turbo"},
++                    "Turcal":{"filter":"Hlt2.*TurboCalib"},
++                    "Full":{"filter":"Hlt2.(?!.*?Turbo).(?!.*?TurboCalib)"}}
++    for k,v in stream_stats.iteritems():
++        v["pass_this_event"] = False
++        v["passed"] = 0
++
++    i = 0
++    processed = 0
++
++
++    import os
++    import time
++
++    os.system("callgrind_control -i on")
++    time.sleep(1)
++
++    #### start of the event loop
++    while i < Moore().EvtMax:
++        i+=1
++        # run the sequences on this event
++        gaudi.run(1)
++        processed +=1
++        if not gaudi.evtsvc()['Hlt1/DecReports']: break
++
++        ### reset the stream counters
++        for s in stream_stats.keys():
++            stream_stats[s]["pass_this_event"] = False
++
++        ### get the raw event size
++        rawevent = gaudi.evtsvc()['DAQ/RawEvent']
++        event_size_turbo = rawevent_size_turbo(rawevent)
++        event_size_persistReco = rawevent_size_persistReco(rawevent)
++        event_size = rawevent_size(rawevent)
++        rbits = routing_bits(rawevent)
++
++        if options.tuplefile != "":
++            DecMaps['RB']["FullEventSize"][0] = float(event_size)
++            DecMaps['RB']["TurboEventSize"][0] = float(event_size_turbo)
++            DecMaps['RB']["persistRecoEventSize"][0] = float(event_size_persistReco)
++            for rb in xrange(96):
++                brname = "RB%s" %rb
++                if rbits[rb]:
++                    DecMaps['RB']["Full"+brname][0] = float(event_size)
++                    DecMaps['RB']["Turbo"+brname][0] = float(event_size_turbo)
++                    DecMaps['RB']["persistReco"+brname][0] = float(event_size_persistReco)
++                    rb_stats[rb]['passed'] += 1
++                    rb_stats[rb]['size'] += event_size
++
++        for rv in Hlt1ByRegex.values():
++            rv["passed_this_event"] = 0
++            rv["processed"] += 1
++
++        for rv in Hlt2ByRegex.values():
++            rv["passed_this_event"] = 0
++            rv["processed"] += 1
++
++        # loop over levels
++        for level in ["Hlt1","Hlt2"]:
++            # do the dec reports exist?
++            if not gaudi.evtsvc()['%s/DecReports'%level]: continue
++            # get the dec reports
++            reps =  gaudi.evtsvc()['%s/DecReports'%level]
++            nPassed = 0
++
++            # loop over all HLT lines
++            for line in Lines[level]:
++                # protection. why is this needed though?
++                if not line+"Decision" in reps.decReports().keys(): continue
++
++                # did this line fire?
++                LINE_FIRED = reps.decReport(line+"Decision").decision()
++
++                # does this event fire any lines that match my "streams"?
++                if LINE_FIRED and level == "Hlt2" and not line == "Hlt2Global": # and not line in remove:
++                    for s in stream_stats.keys():
++                        if re.match(stream_stats[s]["filter"], line, flags=0):
++                            stream_stats[s]["pass_this_event"] = True
++
++                # set the variable to be stored in the tuple (DecMaps is a dictionary of [Hlt1/Hlt2][line-name])
++                if options.tuplefile != "":
++                    if LINE_FIRED:
++                        DecMaps[level][line][0] = 1
++                    else:
++                        DecMaps[level][line][0] = 0
++
++                # increment the counter for this line
++                if LINE_FIRED:
++                    line_stats[line]["passed_incl"]  += 1
++                    if not "Global" in line:
++                        nPassed +=1 ### for the exclusives
++
++                if LINE_FIRED and level == "Hlt1":
++                    for RE,RV in Hlt1ByRegex.iteritems():
++                        if re.match(RE, line, flags=0):
++                            RV["passed_this_event"] = 1.0
++
++                if LINE_FIRED and level == "Hlt2":
++                    for RE,RV in Hlt2ByRegex.iteritems():
++                        if re.match(RE, line, flags=0):
++                            RV["passed_this_event"] = 1.0
++
++            ### outside event loop
++            if nPassed > 0:
++                line_stats["%sGlobal"%level]["passed_incl"] += 1
++            # now go back and count the number of exclusive fires of this line
++            # just need to ignore HltXGlobal
++            for line in Lines[level]:
++                if not line+"Decision" in reps.decReports().keys(): continue # protection
++                if reps.decReport(line+"Decision").decision() and nPassed == 1:
++                    if not "Global" in line:
++                        line_stats[line]["passed_excl"]  += 1
++
++            # exclusive
++            if level == "Hlt1":
++                SUM = sum([RV["passed_this_event"] for RV in Hlt1ByRegex.values()])
++                if nPassed > 0 and SUM == 0:
++                    #inclusive and exclusive are the same for the "other" category
++                    Hlt1ByRegex["Other"]["passed_incl"] += 1
++                    Hlt1ByRegex["Other"]["passed_excl"] += 1
++                for RE,RV in Hlt1ByRegex.iteritems():
++                    if RV["passed_this_event"] == 1: RV["passed_incl"] +=1
++                    if SUM == 1 and RV["passed_this_event"] == 1: RV["passed_excl"] +=1
++
++            if level == "Hlt2":
++                SUM = sum([RV["passed_this_event"] for RV in Hlt2ByRegex.values()])
++                if nPassed > 0 and SUM == 0:
++                    #inclusive and exclusive are the same for the "other" category
++                    Hlt2ByRegex["Other"]["passed_incl"] += 1
++                    Hlt2ByRegex["Other"]["passed_excl"] += 1
++                for RE,RV in Hlt2ByRegex.iteritems():
++                    if RV["passed_this_event"] == 1: RV["passed_incl"] +=1
++                    if SUM == 1 and RV["passed_this_event"] == 1: RV["passed_excl"] +=1
++
++
++            # fill the tree
++            if options.tuplefile != "":
++                DecTrees[level].Fill()
++
++            # stream accounting
++            for s in stream_stats.keys():
++                if stream_stats[s]["pass_this_event"] == True:
++                    stream_stats[s]["passed"] +=1
++
++    # the end
++    gaudi.stop()
++    gaudi.finalize()
++    gaudi.exit()
++
++    # write the root file
++    if options.tuplefile != "":
++        TF.cd()
++        # information (settings etc...) to be propagated to the web page via the root file
++        s1 = TNamed("settings",options.ThresholdSettings)
++        s2 = TNamed("inputdata",options.inputdata)
++        s1.Write()
++        s2.Write()
++        TF.Write()
++
++    #############################################
++    ###### print the summary tables #############
++    #############################################
++    for k,v in line_stats.iteritems():
++        v["processed"] = processed
++    for k,v in stream_stats.iteritems():
++        v["processed"] = processed
++
++    GlobalRates = {}
++    print '='*84
++    print 'HLT %s summary starts here' %("efficiency" if options.mode == "efficiency" else "rate")
++    print '='*84
++    #### print the global rates
++    print '%s Hlt1Lines' %(len(Lines['Hlt1']))
++    print '%s Hlt2Lines' %(len(Lines['Hlt2']))
++    print 'removed lines: %s' %remove
++    print '-'*84
++    print 'processed: %s events' %processed
++    print 'rates assume %s Hz from level-0' %input_rate if options.mode == "rate" else "Efficiencies in percent..."
++    for level in ['Hlt1','Hlt2']:
++        ratescale = 1.e-3*input_rate
++        if options.mode == "efficiency":
++            ratescale = 1.e2
++        rate = getrate(ratescale,line_stats["%sGlobal"%level]["passed_incl"],line_stats["%sGlobal"%level]["processed"])
++        table_row("---","%sGlobal"%level,"%.2f+-%.2f" %(rate[0],rate[1]),"--")
++    ### print the stream rates
++    for k,v in stream_stats.iteritems():
++        rate = getrate(ratescale,v["passed"],v["processed"])
++        table_row("---","Hlt2.*%s"%k,"%.2f+-%.2f" %(rate[0],rate[1]),"--")
++    ### output file sizes
++    if options.outputFile != "":
++        print '-'*84
++        import glob
++        for f in glob.glob(options.outputFile.split(".")[0]+"*."+options.outputFile.split(".")[1]):
++            size = os.path.getsize(f)/(1024.**2)
++            MBs = size*(input_rate/processed)
++            if options.split == "Hlt1" and line_stats["Hlt1Global"]["passed_incl"] > 0:
++                eventSize = 1.e3*size/float(line_stats["Hlt1Global"]["passed_incl"])
++                print '%s\t%.2f MB\t%.2f MB/s\t%.2f kB/evt' %(f,size,MBs,eventSize)
++            else:
++                print '%s\t%.2f MB\t%.2f MB/s' %(f,size,MBs)
++
++    ### by regex
++    print '-'*84
++    iLine = -1 ## counter for line
++    table_row("***","*Regex*","*Incl.*","*Excl.*")
++    OrderedStats = {}
++    for key, value in Hlt1ByRegex.iteritems():
++        OrderedStats[key] = value["passed_incl"]
++    for line_name, rate in sorted(OrderedStats.iteritems(), key=lambda (v,k): (k,v),reverse=True):
++        iLine += 1
++        rate_incl = getrate(ratescale,Hlt1ByRegex[line_name]["passed_incl"],Hlt1ByRegex[line_name]["processed"])
++        rate_excl = getrate(ratescale,Hlt1ByRegex[line_name]["passed_excl"],Hlt1ByRegex[line_name]["processed"])
++        table_row(iLine,line_name.replace("Decision",""),
++                  "%.2f+-%.2f" %(rate_incl[0],rate_incl[1]),
++                  "%.2f+-%.2f" %(rate_excl[0],rate_excl[1]))
++    print '-'*84
++    iLine = -1 ## counter for line
++    table_row("***","*Regex*","*Incl.*","*Excl.*")
++    OrderedStats = {}
++    for key, value in Hlt2ByRegex.iteritems():
++        OrderedStats[key] = value["passed_incl"]
++    for line_name, rate in sorted(OrderedStats.iteritems(), key=lambda (v,k): (k,v),reverse=True):
++        iLine += 1
++        rate_incl = getrate(ratescale,Hlt2ByRegex[line_name]["passed_incl"],Hlt2ByRegex[line_name]["processed"])
++        rate_excl = getrate(ratescale,Hlt2ByRegex[line_name]["passed_excl"],Hlt2ByRegex[line_name]["processed"])
++        table_row(iLine,line_name.replace("Decision",""),
++                  "%.2f+-%.2f" %(rate_incl[0],rate_incl[1]),
++                  "%.2f+-%.2f" %(rate_excl[0],rate_excl[1]))
++    print '-'*84
++
++    #### order by inclusive rate
++    for level in ['Hlt1','Hlt2']:
++        iLine = -1 ## counter for line
++        table_row("***","*Line*","*Incl.*","*Excl.*")
++        OrderedStats = {}
++        for key, value in line_stats.iteritems():
++            if level in key:
++                OrderedStats[key] = value["passed_incl"]
++        rate = getrate(ratescale,line_stats["%sGlobal"%level]["passed_incl"],line_stats["%sGlobal"%level]["processed"])
++        table_row(0,"%sGlobal"%level,
++                  "%.2f+-%.2f" %(rate[0],rate[1]),
++                  "0.0+-0.0")
++        for line_name, rate in sorted(OrderedStats.iteritems(), key=lambda (v,k): (k,v),reverse=True):
++
++            iLine += 1
++            rate_incl = getrate(ratescale,line_stats[line_name]["passed_incl"],line_stats[line_name]["processed"])
++            rate_excl = getrate(ratescale,line_stats[line_name]["passed_excl"],line_stats[line_name]["processed"])
++            if "Global" in line_name:
++                GlobalRates[level] = rate_incl
++            else:
++                table_row(iLine,line_name.replace("Decision",""),
++                          "%.2f+-%.2f" %(rate_incl[0],rate_incl[1]),
++                          "%.2f+-%.2f" %(rate_excl[0],rate_excl[1]))
++    print '='*84
++    print 'HLT %s summary ends here' %("efficiency" if options.mode == "efficiency" else "rate")
++    print '='*84
++
++
++if __name__ == "__main__":
++    sys.exit( main() )
+
+Property changes on: MooreTests/Moore_RateTest_options.py
+___________________________________________________________________
+Added: svn:executable
+   + *
+
+Index: MooreTests/Moore_RateTest_options3.py
+===================================================================
+--- MooreTests/Moore_RateTest_options3.py	(revision 0)
++++ MooreTests/Moore_RateTest_options3.py	(revision 0)
+@@ -0,0 +1,392 @@
++#!/usr/bin/env python
++# Script to test the rates of a HLT configuration
++# Mika Vesterinen
++
++import os, sys, subprocess, re, optparse, math
++
++# Configuration
++import Gaudi.Configuration
++from Gaudi.Configuration import *
++from Configurables import GaudiSequencer as Sequence
++from Configurables import EventSelector, HltConf
++from Moore.Configuration import Moore
++from Gaudi.Configuration import appendPostConfigAction
++from multiprocessing import Process, Queue
++
++HLT1RegexList = ["Hlt1LowMult.*",
++                 "Hlt1(Di|Multi)Muon.*",
++                 "Hlt1SingleMuon.*",
++                 "Hlt1.*Electron.*",
++                 "Hlt1B2.*",
++                 "Hlt1IncPhi.*",
++                 "Hlt1TrackMuon.*",
++                 "Hlt1.*TrackMVA.*",
++                 "Hlt1CalibTracking.*",
++                 "Hlt1DiProton.*"]
++
++HLT2RegexList = ["Hlt2CharmHad.*",
++                 "Hlt2CharmHad.*Turbo.*",
++                 "Hlt2CharmHad(?!.*?Turbo).*",
++                 "Hlt2DiMuon.*"]
++
++
++def linesFromTCK(q,TCK,TCKData):
++
++    _TCK = int(TCK,16)
++    print _TCK
++    type(_TCK)
++    tckbits = (_TCK & (3 << 28)) >> 28
++    if tckbits == 1:
++        from TCKUtils.utils import getHlt1Lines
++        if TCKData != "":
++            from Configurables import ConfigCDBAccessSvc
++            cas=ConfigCDBAccessSvc(File=TCKData+"/config.cdb")
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt1Lines(_TCK,cas=cas)])
++        else:
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt1Lines(_TCK)])
++    elif tckbits == 2:
++        from TCKUtils.utils import getHlt2Lines
++        if TCKData != "":
++            from Configurables import ConfigCDBAccessSvc
++            cas=ConfigCDBAccessSvc(File=TCKData+"/config.cdb")
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt2Lines(_TCK,cas=cas)])
++        else:
++            lines = set([l.replace("Hlt::Line/","") for l in getHlt2Lines(_TCK)])
++
++    q.put(lines)
++
++def getrate(scale,numer,denom):
++    eff = float(numer)/float(denom)
++    err = math.sqrt((eff-eff**2)/denom)
++    return [scale*eff,scale*err]
++
++def table_row(iLine,name,incl,excl):
++    if type(iLine) == type(""):
++        print ('|%s|%s\t' %(iLine,name[:40] + (name[40:] and '...'))).expandtabs(50),
++    else:
++        print ('|%03d|%s\t' %(int(iLine),name[:40] + (name[40:] and '...'))).expandtabs(50),
++    print ('|%s\t|%s\t|' %(incl,excl)).expandtabs(16)
++
++def rawevent_size(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [b for b in xrange(LHCb.RawBank.LastType)]
++    ibanks.remove(LHCb.RawBank.DstData)
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def rawevent_size_turbo(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [LHCb.RawBank.ODIN,
++              LHCb.RawBank.L0DU,
++              LHCb.RawBank.HltSelReports,
++              LHCb.RawBank.HltDecReports,
++              LHCb.RawBank.HltRoutingBits,
++              LHCb.RawBank.HltVertexReports,
++              LHCb.RawBank.DAQ,
++              LHCb.RawBank.TestDet,
++              LHCb.RawBank.TAEHeader,
++              LHCb.RawBank.HltLumiSummary,
++              LHCb.RawBank.DstBank,
++              #LHCb.RawBank.DstData, ## account for this separately
++              LHCb.RawBank.DstAddress,
++              LHCb.RawBank.FileID,
++              LHCb.RawBank.GaudiSerialize,
++              LHCb.RawBank.GaudiHeader,
++              LHCb.RawBank.L0Calo,
++              LHCb.RawBank.L0CaloFull,
++              LHCb.RawBank.L0Muon,
++              LHCb.RawBank.L0MuonProcCand,
++              LHCb.RawBank.L0PU,
++              LHCb.RawBank.L0CaloError,
++              LHCb.RawBank.L0MuonCtrlAll,
++              LHCb.RawBank.L0MuonError,
++              LHCb.RawBank.L0MuonProcData,
++              LHCb.RawBank.L0MuonRaw,
++              LHCb.RawBank.L0DUError,
++              LHCb.RawBank.L0PUFull,
++              LHCb.RawBank.L0PUError]
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def rawevent_size_persistReco(rawevent):
++    """Return the size in bytes of the raw event."""
++    ibanks = [LHCb.RawBank.DstData]
++    return sum(bank.totalSize() for i in ibanks for bank in rawevent.banks(i))
++
++def routing_bits(rawevent):
++    """Return a list with the 96 routing bit values."""
++    rbbanks = rawevent.banks(LHCb.RawBank.HltRoutingBits)
++    if rbbanks.size() < 1: return [0]*96  # some events don't have rb bank
++    assert rbbanks.size() == 1  # stop if we have multiple rb banks
++    d = rbbanks[rbbanks.size() - 1].data()  # get last bank
++    bits = "{:032b}{:032b}{:032b}".format(d[2], d[1], d[0])
++    return map(int, reversed(bits))
++
++parser = optparse.OptionParser( usage = "usage: %prog [options]" )
++
++# general test options
++
++parser.add_option( "-n", "--evtmax", type="int", action = "store", dest = "EvtMax",
++                   #default = 30000, help = "Number of events to run over" )
++                   default  = 30000, help = "Number of events to run over" )
++
++parser.add_option( "--mode", action="store", dest="mode",
++                   default='rate', help="Report rates or efficiencies?")
++
++parser.add_option( "--settings", action = "store", dest="ThresholdSettings",
++                   #default = 'Physics_pp_2017',
++                   default = 'Physics_pp_June2016',
++                   help = "ThresholdSettings used by Moore")
++
++parser.add_option( "--TCK", action = "store", dest="TCK",
++                   default = '',
++                   help = "HLT TCK. If unspecified, then run from ThresholdSettings.")
++
++parser.add_option( "--split",action="store",dest="split",
++                   default="",help="Split mode for Moore ('' or 'Hlt1' or 'Hlt2')")
++
++# options related to the input data
++
++parser.add_option( "--inputdata",action="store",dest="inputdata",
++                   default="2016NB_25ns_L0Filt0x1609",help="TestFileDB label, or path to raw file.")
++
++parser.add_option( "-d", "--datatype", action="store", dest="DataType",
++                   default="2016", help="DataType of inputdata")
++
++parser.add_option( "--TFDBForTags",action="store",dest="TFDBForTags",
++                   default="",help="Original test file db path, to pick up tags")
++
++parser.add_option( "--dddbtag", action="store", dest="DDDBtag",
++                   default='', help="DDDBTag to use. Rely on TestFileDB if unspecified." )
++
++parser.add_option( "--conddbtag", action = "store", dest = "CondDBtag",
++                   default = '', help = "CondDBTag to use. Rely on TestFileDB if unspecified." )
++
++parser.add_option( "--Simulation", action = "store_true",
++                   default = False, help = "Is this simulated data?")
++
++parser.add_option( "--Online", action = "store_true",
++                   default = False, help = "Are you running on plus on data from the farm?")
++
++parser.add_option( "--L0TCK", action = "store", dest="L0TCK",
++                   default = '',
++                   help = "L0 TCK. Should specificy if the input data was filtered with something different to what is in the ThresholdSettings.")
++
++# other options
++
++parser.add_option( "--TCKData", action = "store", dest = "TCKData",
++                   default = "", help = "TCKData")
++
++parser.add_option( "--DisableRunStampCheck", action = "store_true",
++                   default = False, help = "DisableRunStampCheck")
++
++parser.add_option( "--EnableOutputStreaming", action = "store_true",
++                   default = False, help = "EnableOutputStreaming")
++
++parser.add_option( "--input_rate",type="float",action="store",dest="input_rate",
++                   default=1.e6,help="Input rate from L0 in Hz")
++
++parser.add_option( "--tuplefile",action="store",dest="tuplefile",
++                   default="tuples.root",help="Output root file")
++
++parser.add_option( "--outputFile",action="store",dest="outputFile",
++                   default="",help="OutputFile")
++
++parser.add_option( "--OutputLevel",type="int",action="store",dest="OutputLevel",
++                   default=3,help="OutputLevel")
++
++parser.add_option( "--hlt1changes",action="store",dest="hlt1changes",
++                   default="DefHlt1",help="Changes to Hlt1 thresholds")
++
++parser.add_option( "--AdditionalHlt2Lines",action="store",dest="AdditionalHlt2Lines",
++                   default="",help="Semicolon separated list of lines")
++
++parser.add_option( "--debug", action="store_true", dest="debug",
++                   default=False, help="Debug?")
++
++# Parse the arguments
++(options, args) = parser.parse_args()
++
++# write some information about the test (needed for the handler that makes the web page)
++f = open("JobSettings.txt",'w')
++f.write("%s_%s_%s" %(options.inputdata,options.ThresholdSettings,options.hlt1changes))
++
++Lines = {}
++Lines["Hlt1"] = set()
++Lines["Hlt2"] = set()
++
++######### RUNNING FROM TCK ##############
++if options.TCK != "":
++    queue = Queue()
++    p = Process(target=linesFromTCK, args=(queue, options.TCK,options.TCKData))
++    p.start()
++    p.join() # this blocks until the process terminates
++    Lines[options.split] = queue.get()
++    print Lines
++    tckbits = (int(options.TCK,16) & (3 << 28)) >> 28
++    mapping = {1:"Hlt1",2:"Hlt2"}
++    options.split = mapping[tckbits]
++    if options.TCKData != "":
++        Moore().TCKData = options.TCKData
++    Moore().Split = options.split
++    Moore().UseTCK = True
++    Moore().InitialTCK = options.TCK
++    if options.split == "Hlt1":
++        Moore().RemoveInputHltRawBanks = True
++    elif options.split == "Hlt2":
++        Moore().RemoveInputHltRawBanks = False
++    if options.split == "Hlt1":
++        from Configurables import HltConfigSvc
++        trans = { 'DeterministicPrescaler/Hlt1MBNoBiasPreScaler' :  { 'AcceptFraction' : {'.*' : '0'}} }
++        prop="ApplyTransformation"
++        svc=HltConfigSvc()
++        svc.setProp(prop,trans)
++
++######### RUNNING FROM SETTINGS ##############
++else:
++    from Configurables import HltConf
++    Moore().ThresholdSettings = options.ThresholdSettings
++    Moore().UseTCK = False
++    Moore().Split=options.split
++
++    # if specified, we can overide the L0TCK in the ThresholdSettings
++    # to use the one which which the input data set was filtered
++
++    if options.L0TCK != "":
++        HltConf().setProp("L0TCK",options.L0TCK)
++
++    # by default, the output streaming is disabled in HltConf
++    Moore().EnableOutputStreaming = options.EnableOutputStreaming
++
++    # Hlt raw banks should be removed when running in unsplit or Hlt1 mode
++    # They should not be removed when running in Hlt2 mode
++    if options.split in ["","Hlt1"]:
++        Moore().RemoveInputHltRawBanks = True
++    elif options.split == "Hlt2":
++        Moore().RemoveInputHltRawBanks = False
++
++    # By default, we remove the following lines
++    # - In the typical input dataset, we won't get the correct rate of lumi events
++    # - In the NB datasets, Hlt1MBNoBias will always fire (with its 10% prescale)
++    # - Also avoid the rate limited lines
++    HltConf().RemoveHlt1Lines = ["Hlt1MBNoBias",
++                                 "Hlt1MBNoBiasRateLimited",
++                                 "Hlt1Lumi",
++                                 "Hlt2Lumi"]
++
++    # option to add Hlt2 lines that aren't in the settings
++    # e.g. if you are developing a new line
++    if options.AdditionalHlt2Lines != "":
++        HltConf().AdditionalHlt2Lines = options.AdditionalHlt2Lines.split(";")
++
++    # the following is an example of how to overwrite some HltSettings
++    # this would be with
++    # > python Moore_RateTest.py --hlt1changes=EXAMPLE etc..
++    if options.hlt1changes != "":
++        from Hlt1Lines.Hlt1TrackLines            import Hlt1TrackLinesConf
++        from Hlt1Lines.Hlt1MVALines            import Hlt1MVALinesConf
++        OPTIONS = {"EXAMPLE":{Hlt1TrackLinesConf : {  'Muon_PT'           : 1100.
++                                                      , 'Muon_IPChi2'       : 35.}
++                              },
++                   "TightHLT1":{Hlt1MVALinesConf : {  'TrackMVA':{'Param3':1.1},
++                                                      'TwoTrackMVA':{'Threshold':0.95},
++                                                      }
++                                }
++                   }
++        if options.hlt1changes in OPTIONS.keys():
++            HltConf().OverwriteSettings = OPTIONS[options.hlt1changes]
++
++
++# Settings that are common to "TCK" and "ThresholdSettings" modes
++Moore().CheckOdin = False
++Moore().ForceSingleL0Configuration = False
++Moore().EnableTimer = 'Moore_RateTest.csv'
++Moore().EvtMax = options.EvtMax
++Moore().OutputLevel = options.OutputLevel
++Moore().outputFile = options.outputFile
++input_rate = options.input_rate
++
++
++
++# Needed when running over real data
++if not options.Simulation:
++    from Configurables import CondDB
++    CondDB().IgnoreHeartBeat = True
++    CondDB().EnableRunChangeHandler = True
++    CondDB().EnableRunStampCheck= not options.DisableRunStampCheck
++    if options.Online:
++        CondDB().UseDBSnapshot = True
++        CondDB().DBSnapshotDirectory = "/group/online/hlt/conditions"
++        CondDB().Tags["ONLINE"] = 'fake'
++        CondDB().Online = True
++        CondDB().EnableRunChangeHandler = True
++        CondDB().EnableRunStampCheck= False
++        if options.split=="Hlt2":
++            import sys
++            try:
++                import All
++            except ImportError:
++                rd = '/group/online/hlt/conditions/RunChangeHandler'
++                sys.path.append(rd)
++                import All
++            CondDB().RunChangeHandlerConditions = All.ConditionMap
++
++        if options.split=="Hlt1":
++            import sys
++            try:
++                import AllHlt1
++            except ImportError:
++                rd = '/group/online/hlt/conditions/RunChangeHandler'
++                sys.path.append(rd)
++                import AllHlt1
++            CondDB().RunChangeHandlerConditions = AllHlt1.ConditionMap
++
++# inputdata
++if ".mdf" in options.inputdata:
++    from GaudiConf import IOHelper
++    IOHelper("MDF").inputFiles([options.inputdata])
++    Moore().Simulation = options.Simulation
++elif ".dst" in options.inputdata:
++    from GaudiConf import IOHelper
++    IOHelper().inputFiles(["PFN:"+options.inputdata])
++    Moore().Simulation = options.Simulation
++else:
++    from PRConfig import TestFileDB
++    TestFileDB.test_file_db[options.inputdata].run(configurable=Moore())
++
++# tags
++# Only set the tags if specified
++# This should be done if you neither provide TestFileDB label via --inputdata, nor provide it via --TFDBForTags
++if options.CondDBtag != '':
++    Moore().CondDBtag = options.CondDBtag
++if options.DDDBtag != '':
++    Moore().DDDBtag = options.DDDBtag
++if options.TFDBForTags != '':
++    from PRConfig import TestFileDB
++    Moore().DDDBtag = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['DDDB']
++    Moore().CondDBtag = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['CondDB']
++    Moore().Simulation = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['Simulation']
++    Moore().DataType = TestFileDB.test_file_db[options.TFDBForTags].qualifiers['DataType']
++
++# deal with the Herschel decoding issue on MC (only when running from settings)
++if Moore().getProp('Simulation') and options.ThresholdSettings != "":
++    from Configurables import HltConf
++    remove = ["Hlt1LowMultMaxVeloAndHerschel", "Hlt1LowMultVeloAndHerschel_Leptons", "Hlt1LowMultVeloAndHerschel_Hadrons","Hlt1LowMultMaxVeloAndHerschel","Hlt1LowMultVeloAndHerschel_Hadrons", "Hlt1LowMultVeloAndHerschel_Leptons"]
++    print '#'*100
++    print 'WARNING: SINCE YOU RUN ON A MC SAMPLE, WE ASSUME THAT WE NEED TO DISABLE ALL HLT1 LINES THAT REQUIRE DECODING OF HERSCHEL BANKS'
++    print 'DISABLING:', remove
++    print '#'*100
++    HltConf().RemoveHlt1Lines += remove
++
++from Configurables import GaudiSequencer
++from Gaudi.Configuration import appendPostConfigAction
++def addProfile():
++     from Configurables import CallgrindProfile
++     p = CallgrindProfile('CallgrindProfile')
++     p.StartFromEventN = 500
++     p.StopAtEventN = 29000
++     p.DumpAtEventN = 29000
++     p.DumpName = 'CALLGRIND-OUT'
++     GaudiSequencer("HltDecisionSequence").Members.insert(0, p)
++appendPostConfigAction(addProfile)
++# print the Moore configurations
++print options
++print Moore()
+
+Property changes on: MooreTests/Moore_RateTest_options3.py
+___________________________________________________________________
+Added: svn:executable
+   + *
+
